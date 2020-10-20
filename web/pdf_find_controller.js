@@ -224,6 +224,7 @@ class PDFFindController {
     this._findTimeout = null;
 
     this._firstPageCapability = createPromiseCapability();
+    this._searchOffset = [];
   }
 
   /**
@@ -349,8 +350,19 @@ class PDFFindController {
     return true;
   }
 
+  _calculateRealOffset(searchIndex) {
+    const offsets = this._searchOffset.filter(
+      value => value.offset >= searchIndex
+    );
+
+    const diff = offsets.length ? offsets[0].value : 0;
+
+    return searchIndex - diff + 1;
+  }
+
   _calculatePhraseMatch(query, pageIndex, pageContent, entireWord) {
     const matches = [];
+    const matchesLength = [];
     const queryLen = query.length;
 
     let matchIdx = -queryLen;
@@ -362,9 +374,15 @@ class PDFFindController {
       if (entireWord && !this._isEntireWord(pageContent, matchIdx, queryLen)) {
         continue;
       }
-      matches.push(matchIdx);
+
+      const start = this._calculateRealOffset(matchIdx);
+      matches.push(start);
+      matchesLength.push(
+        this._calculateRealOffset(matchIdx + queryLen) - start
+      );
     }
     this._pageMatches[pageIndex] = matches;
+    this._pageMatchesLength[pageIndex] = matchesLength;
   }
 
   _calculateWordMatch(query, pageIndex, pageContent, entireWord) {
@@ -425,6 +443,7 @@ class PDFFindController {
       query = query.toLowerCase();
     }
 
+    console.log("Phrase Search:" + phraseSearch);
     if (phraseSearch) {
       this._calculatePhraseMatch(query, pageIndex, pageContent, entireWord);
     } else {
@@ -447,6 +466,37 @@ class PDFFindController {
       this._matchesCountTotal += pageMatchesCount;
       this._updateUIResultsCount();
     }
+  }
+
+  _findBestSeparator(current, next, currentOffset) {
+    if (
+      next &&
+      current.transform[5] !== next.transform[5] &&
+      !current.str.endsWith("-")
+    ) {
+      // TODO the highlights are currently offset because of this, pls fix
+      this._searchOffset.push({
+        offset: currentOffset,
+        value:
+          (this._searchOffset.length !== 0
+            ? this._searchOffset[this._searchOffset.length - 1].value
+            : 0) + 1,
+      });
+      return " ";
+    }
+    return "";
+  }
+
+  _reduceWithMatchingSeparator(all, current, currentIndex, arr) {
+    return (
+      all +
+      current.str +
+      this._findBestSeparator(
+        current,
+        currentIndex < arr.length - 1 ? arr[currentIndex + 1] : null,
+        all.length + current.str.length
+      )
+    );
   }
 
   _extractText() {
@@ -474,11 +524,14 @@ class PDFFindController {
               const strBuf = [];
 
               for (let j = 0, jj = textItems.length; j < jj; j++) {
-                strBuf.push(textItems[j].str);
+                strBuf.push(textItems[j]);
               }
 
               // Store the normalized page content (text items) as one string.
-              this._pageContents[i] = normalize(strBuf.join(""));
+              this._pageContents[i] = normalize(
+                strBuf.reduce(this._reduceWithMatchingSeparator.bind(this), "")
+              );
+              console.log(this._pageContents[i]);
               extractTextCapability.resolve(i);
             },
             reason => {
