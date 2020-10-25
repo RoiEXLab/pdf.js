@@ -350,14 +350,18 @@ class PDFFindController {
     return true;
   }
 
-  _calculateRealOffset(searchIndex) {
-    const offsets = this._searchOffset.filter(
-      value => value.offset >= searchIndex
+  _calculateRealOffset(searchIndex, pageIndex) {
+    console.log(searchIndex);
+    console.log(this._searchOffset[pageIndex]);
+    const offsets = this._searchOffset[pageIndex].filter(
+      value => value.offset < searchIndex
     );
 
-    const diff = offsets.length ? offsets[0].value : 0;
+    const diff = offsets.length ? offsets[offsets.length - 1].value : 0;
 
-    return searchIndex - diff + 1;
+    console.log(diff);
+
+    return searchIndex - diff;
   }
 
   _calculatePhraseMatch(query, pageIndex, pageContent, entireWord) {
@@ -375,10 +379,10 @@ class PDFFindController {
         continue;
       }
 
-      const start = this._calculateRealOffset(matchIdx);
+      const start = this._calculateRealOffset(matchIdx, pageIndex);
       matches.push(start);
       matchesLength.push(
-        this._calculateRealOffset(matchIdx + queryLen) - start
+        this._calculateRealOffset(matchIdx + queryLen, pageIndex) - start
       );
     }
     this._pageMatches[pageIndex] = matches;
@@ -468,35 +472,35 @@ class PDFFindController {
     }
   }
 
-  _findBestSeparator(current, next, currentOffset) {
+  _applySearchFeatures(current, next) {
     if (
       next &&
       current.transform[5] !== next.transform[5] &&
       !current.str.endsWith("-")
     ) {
-      // TODO the highlights are currently offset because of this, pls fix
-      this._searchOffset.push({
-        offset: currentOffset,
-        value:
-          (this._searchOffset.length !== 0
-            ? this._searchOffset[this._searchOffset.length - 1].value
-            : 0) + 1,
-      });
-      return " ";
+      return current.str + " ";
     }
-    return "";
+    return current.str;
   }
 
   _reduceWithMatchingSeparator(all, current, currentIndex, arr) {
-    return (
-      all +
-      current.str +
-      this._findBestSeparator(
-        current,
-        currentIndex < arr.length - 1 ? arr[currentIndex + 1] : null,
-        all.length + current.str.length
-      )
+    const enhancedString = this._applySearchFeatures(
+      current,
+      currentIndex < arr.length - 1 ? arr[currentIndex + 1] : null
     );
+
+    const lastOffset =
+      all.offsets.length !== 0 ? all.offsets[all.offsets.length - 1].value : 0;
+
+    all.offsets.push({
+      offset: all.str.length + current.str.length,
+      value: lastOffset + enhancedString.length - current.str.length,
+    });
+
+    return {
+      str: all.str + enhancedString,
+      offsets: all.offsets,
+    };
   }
 
   _extractText() {
@@ -527,11 +531,15 @@ class PDFFindController {
                 strBuf.push(textItems[j]);
               }
 
+              this._searchOffset[i] = [];
               // Store the normalized page content (text items) as one string.
               this._pageContents[i] = normalize(
-                strBuf.reduce(this._reduceWithMatchingSeparator.bind(this), "")
+                strBuf.reduce(this._reduceWithMatchingSeparator.bind(this), {
+                  str: "",
+                  offsets: this._searchOffset[i],
+                }).str
               );
-              console.log(this._pageContents[i]);
+
               extractTextCapability.resolve(i);
             },
             reason => {
