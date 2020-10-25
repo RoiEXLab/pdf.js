@@ -351,15 +351,11 @@ class PDFFindController {
   }
 
   _calculateRealOffset(searchIndex, pageIndex) {
-    console.log(searchIndex);
-    console.log(this._searchOffset[pageIndex]);
     const offsets = this._searchOffset[pageIndex].filter(
       value => value.offset < searchIndex
     );
 
     const diff = offsets.length ? offsets[offsets.length - 1].value : 0;
-
-    console.log(diff);
 
     return searchIndex - diff;
   }
@@ -411,9 +407,12 @@ class PDFFindController {
           continue;
         }
         // Other searches do not, so we store the length.
+        const start = this._calculateRealOffset(matchIdx, pageIndex);
         matchesWithLength.push({
-          match: matchIdx,
-          matchLength: subqueryLen,
+          match: start,
+          matchLength:
+            this._calculateRealOffset(matchIdx + subqueryLen, pageIndex) -
+            start,
           skipped: false,
         });
       }
@@ -447,7 +446,6 @@ class PDFFindController {
       query = query.toLowerCase();
     }
 
-    console.log("Phrase Search:" + phraseSearch);
     if (phraseSearch) {
       this._calculatePhraseMatch(query, pageIndex, pageContent, entireWord);
     } else {
