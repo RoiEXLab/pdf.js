@@ -471,11 +471,10 @@ class PDFFindController {
   }
 
   _applySearchFeatures(current, next) {
-    if (
-      next &&
-      current.transform[5] !== next.transform[5] &&
-      !current.str.endsWith("-")
-    ) {
+    if (next && current.transform[5] !== next.transform[5]) {
+      if (current.str.endsWith("-")) {
+        return current.str.substr(0, current.str.length - 1);
+      }
       return current.str + " ";
     }
     return current.str;
@@ -491,7 +490,8 @@ class PDFFindController {
       all.offsets.length !== 0 ? all.offsets[all.offsets.length - 1].value : 0;
 
     all.offsets.push({
-      offset: all.str.length + current.str.length,
+      offset:
+        all.str.length + Math.min(current.str.length, enhancedString.length),
       value: lastOffset + enhancedString.length - current.str.length,
     });
 
