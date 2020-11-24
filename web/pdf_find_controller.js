@@ -201,6 +201,7 @@ class PDFFindController {
     this._pdfDocument = null;
     this._pageMatches = [];
     this._pageMatchesLength = [];
+    this._pageBoundaries = [];
     this._state = null;
     // Currently selected match.
     this._selected = {
@@ -213,11 +214,11 @@ class PDFFindController {
       matchIdx: null,
       wrapped: false,
     };
-    this._extractTextPromises = [];
+    this._extractTextPromise = null;
     this._pageContents = []; // Stores the normalized text for each page.
     this._matchesCountTotal = 0;
     this._pagesToSearch = null;
-    this._pendingFindMatches = Object.create(null);
+    this._pendingFindMatches = false;
     this._resumePageIdx = null;
     this._dirtyMatch = false;
     clearTimeout(this._findTimeout);
@@ -350,8 +351,8 @@ class PDFFindController {
     return true;
   }
 
-  _calculateRealOffset(searchIndex, pageIndex) {
-    const offsets = this._searchOffset[pageIndex].filter(
+  _calculateRealOffset(searchIndex) {
+    const offsets = this._searchOffset.filter(
       value => value.offset < searchIndex
     );
 
@@ -360,32 +361,41 @@ class PDFFindController {
     return searchIndex - diff;
   }
 
-  _calculatePhraseMatch(query, pageIndex, pageContent, entireWord) {
-    const matches = [];
-    const matchesLength = [];
+  _getPageForIndex(index) {
+    return this._pageBoundaries.filter(value => value < index).length;
+  }
+
+  _calculatePhraseMatch(query, accumulatedPageContent, entireWord) {
     const queryLen = query.length;
 
     let matchIdx = -queryLen;
     while (true) {
-      matchIdx = pageContent.indexOf(query, matchIdx + queryLen);
+      matchIdx = accumulatedPageContent.indexOf(query, matchIdx + queryLen);
       if (matchIdx === -1) {
         break;
       }
-      if (entireWord && !this._isEntireWord(pageContent, matchIdx, queryLen)) {
+      if (
+        entireWord &&
+        !this._isEntireWord(accumulatedPageContent, matchIdx, queryLen)
+      ) {
         continue;
       }
 
-      const start = this._calculateRealOffset(matchIdx, pageIndex);
-      matches.push(start);
-      matchesLength.push(
-        this._calculateRealOffset(matchIdx + queryLen, pageIndex) - start
+      const start = this._calculateRealOffset(matchIdx);
+      const pageIndex = this._getPageForIndex(matchIdx);
+      if (!this._pageMatches[pageIndex]) {
+        this._pageMatches[pageIndex] = [];
+        this._pageMatchesLength[pageIndex] = [];
+      }
+
+      this._pageMatches[pageIndex].push(start);
+      this._pageMatchesLength[pageIndex].push(
+        this._calculateRealOffset(matchIdx + queryLen) - start
       );
     }
-    this._pageMatches[pageIndex] = matches;
-    this._pageMatchesLength[pageIndex] = matchesLength;
   }
 
-  _calculateWordMatch(query, pageIndex, pageContent, entireWord) {
+  _calculateWordMatch(query, accumulatedPageContent, entireWord) {
     const matchesWithLength = [];
 
     // Divide the query into pieces and search for text in each piece.
@@ -396,43 +406,50 @@ class PDFFindController {
 
       let matchIdx = -subqueryLen;
       while (true) {
-        matchIdx = pageContent.indexOf(subquery, matchIdx + subqueryLen);
+        matchIdx = accumulatedPageContent.indexOf(
+          subquery,
+          matchIdx + subqueryLen
+        );
         if (matchIdx === -1) {
           break;
         }
         if (
           entireWord &&
-          !this._isEntireWord(pageContent, matchIdx, subqueryLen)
+          !this._isEntireWord(accumulatedPageContent, matchIdx, subqueryLen)
         ) {
           continue;
         }
+
+        const start = this._calculateRealOffset(matchIdx);
+        const pageIndex = this._getPageForIndex(matchIdx);
+        if (!matchesWithLength[pageIndex]) {
+          matchesWithLength[pageIndex] = [];
+        }
         // Other searches do not, so we store the length.
-        const start = this._calculateRealOffset(matchIdx, pageIndex);
-        matchesWithLength.push({
+        matchesWithLength[pageIndex].push({
           match: start,
           matchLength:
-            this._calculateRealOffset(matchIdx + subqueryLen, pageIndex) -
-            start,
+            this._calculateRealOffset(matchIdx + subqueryLen) - start,
           skipped: false,
         });
       }
+      matchesWithLength.forEach((matches, idx) => {
+        // Prepare arrays for storing the matches.
+        this._pageMatches[idx] = [];
+        this._pageMatchesLength[idx] = [];
+
+        // Sort `matchesWithLength`,
+        // remove intersecting terms and put the result into the two arrays.
+        this._prepareMatches(
+          matches,
+          this._pageMatches[idx],
+          this._pageMatchesLength[idx]
+        );
+      });
     }
-
-    // Prepare arrays for storing the matches.
-    this._pageMatchesLength[pageIndex] = [];
-    this._pageMatches[pageIndex] = [];
-
-    // Sort `matchesWithLength`, remove intersecting terms and put the result
-    // into the two arrays.
-    this._prepareMatches(
-      matchesWithLength,
-      this._pageMatches[pageIndex],
-      this._pageMatchesLength[pageIndex]
-    );
   }
 
-  _calculateMatch(pageIndex) {
-    let pageContent = this._pageContents[pageIndex];
+  _calculateMatch(numPages) {
     let query = this._query;
     const { caseSensitive, entireWord, phraseSearch } = this._state;
 
@@ -441,32 +458,40 @@ class PDFFindController {
       return;
     }
 
+    let documentText = this._pageContents;
+
     if (!caseSensitive) {
-      pageContent = pageContent.toLowerCase();
+      documentText = documentText.toLowerCase();
       query = query.toLowerCase();
     }
 
     if (phraseSearch) {
-      this._calculatePhraseMatch(query, pageIndex, pageContent, entireWord);
+      this._calculatePhraseMatch(query, documentText, entireWord);
     } else {
-      this._calculateWordMatch(query, pageIndex, pageContent, entireWord);
+      this._calculateWordMatch(query, documentText, entireWord);
     }
 
-    // When `highlightAll` is set, ensure that the matches on previously
-    // rendered (and still active) pages are correctly highlighted.
-    if (this._state.highlightAll) {
-      this._updatePage(pageIndex);
-    }
-    if (this._resumePageIdx === pageIndex) {
-      this._resumePageIdx = null;
-      this._nextPageMatch();
-    }
+    for (let pageIndex = 0; pageIndex < numPages; pageIndex++) {
+      if (!this._pageMatches[pageIndex]) {
+        this._pageMatches[pageIndex] = [];
+        this._pageMatchesLength[pageIndex] = [];
+      }
+      // When `highlightAll` is set, ensure that the matches on previously
+      // rendered (and still active) pages are correctly highlighted.
+      if (this._state.highlightAll) {
+        this._updatePage(pageIndex);
+      }
+      if (this._resumePageIdx === pageIndex) {
+        this._resumePageIdx = null;
+        this._nextPageMatch();
+      }
 
-    // Update the match count.
-    const pageMatchesCount = this._pageMatches[pageIndex].length;
-    if (pageMatchesCount > 0) {
-      this._matchesCountTotal += pageMatchesCount;
-      this._updateUIResultsCount();
+      // Update the match count.
+      const pageMatchesCount = this._pageMatches[pageIndex].length;
+      if (pageMatchesCount > 0) {
+        this._matchesCountTotal += pageMatchesCount;
+        this._updateUIResultsCount();
+      }
     }
   }
 
@@ -480,38 +505,49 @@ class PDFFindController {
     return current.str;
   }
 
-  _reduceWithMatchingSeparator(all, current, currentIndex, arr) {
+  _reduceWithMatchingSeparator(str, current, currentIndex, arr) {
     const enhancedString = this._applySearchFeatures(
       current,
       currentIndex < arr.length - 1 ? arr[currentIndex + 1] : null
     );
 
     const lastOffset =
-      all.offsets.length !== 0 ? all.offsets[all.offsets.length - 1].value : 0;
+      this._searchOffset.length !== 0
+        ? this._searchOffset[this._searchOffset.length - 1].value
+        : 0;
 
-    all.offsets.push({
-      offset:
-        all.str.length + Math.min(current.str.length, enhancedString.length),
-      value: lastOffset + enhancedString.length - current.str.length,
-    });
+    if (this._pageBoundaries.length !== current.page) {
+      this._pageBoundaries.push(str.length);
 
-    return {
-      str: all.str + enhancedString,
-      offsets: all.offsets,
-    };
+      this._searchOffset.push({
+        offset:
+          // TODO use smarter diff algorithm than hacky Math.min
+          str.length + Math.min(current.str.length, enhancedString.length),
+        value: str.length + enhancedString.length - current.str.length,
+      });
+    } else {
+      this._searchOffset.push({
+        offset:
+          // TODO use smarter diff algorithm than hacky Math.min
+          str.length + Math.min(current.str.length, enhancedString.length),
+        value: lastOffset + enhancedString.length - current.str.length,
+      });
+    }
+
+    return str + enhancedString;
   }
 
   _extractText() {
     // Perform text extraction once if this method is called multiple times.
-    if (this._extractTextPromises.length > 0) {
+    if (this._extractTextPromise) {
       return;
     }
 
+    const strBuf = [];
     let promise = Promise.resolve();
+    const extractTextCapability = createPromiseCapability();
+    this._extractTextPromise = extractTextCapability.promise;
     for (let i = 0, ii = this._linkService.pagesCount; i < ii; i++) {
-      const extractTextCapability = createPromiseCapability();
-      this._extractTextPromises[i] = extractTextCapability.promise;
-
       promise = promise.then(() => {
         return this._pdfDocument
           .getPage(i + 1)
@@ -523,22 +559,10 @@ class PDFFindController {
           .then(
             textContent => {
               const textItems = textContent.items;
-              const strBuf = [];
 
               for (let j = 0, jj = textItems.length; j < jj; j++) {
-                strBuf.push(textItems[j]);
+                strBuf.push({ ...textItems[j], page: i });
               }
-
-              this._searchOffset[i] = [];
-              // Store the normalized page content (text items) as one string.
-              this._pageContents[i] = normalize(
-                strBuf.reduce(this._reduceWithMatchingSeparator.bind(this), {
-                  str: "",
-                  offsets: this._searchOffset[i],
-                }).str
-              );
-
-              extractTextCapability.resolve(i);
             },
             reason => {
               console.error(
@@ -546,12 +570,20 @@ class PDFFindController {
                 reason
               );
               // Page error -- assuming no text content.
-              this._pageContents[i] = "";
-              extractTextCapability.resolve(i);
+              this._pageContents = "";
+              extractTextCapability.resolve();
             }
           );
       });
     }
+    promise.then(() => {
+      // Store the normalized page content (text items) as one string.
+      this._pageContents = normalize(
+        strBuf.reduce(this._reduceWithMatchingSeparator.bind(this), "")
+      );
+
+      extractTextCapability.resolve();
+    });
   }
 
   _updatePage(index) {
@@ -596,15 +628,11 @@ class PDFFindController {
 
       this._updateAllPages(); // Wipe out any previously highlighted matches.
 
-      for (let i = 0; i < numPages; i++) {
-        // Start finding the matches as soon as the text is extracted.
-        if (this._pendingFindMatches[i] === true) {
-          continue;
-        }
-        this._pendingFindMatches[i] = true;
-        this._extractTextPromises[i].then(pageIdx => {
-          delete this._pendingFindMatches[pageIdx];
-          this._calculateMatch(pageIdx);
+      if (!this._pendingFindMatches) {
+        this._pendingFindMatches = true;
+        this._extractTextPromise.then(() => {
+          this._pendingFindMatches = false;
+          this._calculateMatch(numPages);
         });
       }
     }
