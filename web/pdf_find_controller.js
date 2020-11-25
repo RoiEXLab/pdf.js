@@ -381,6 +381,8 @@ class PDFFindController {
         continue;
       }
 
+      this._matchesCountTotal++;
+
       const start = this._calculateRealOffset(matchIdx);
       const pageIndex = this._getPageForIndex(matchIdx);
       if (!this._pageMatches[pageIndex]) {
@@ -389,9 +391,23 @@ class PDFFindController {
       }
 
       this._pageMatches[pageIndex].push(start);
-      this._pageMatchesLength[pageIndex].push(
-        this._calculateRealOffset(matchIdx + queryLen) - start
-      );
+      const end = this._calculateRealOffset(matchIdx + queryLen);
+      this._pageMatchesLength[pageIndex].push(end - start);
+
+      // TODO implement multi line highlight
+      const currentEnd = matchIdx + queryLen;
+      if (this._getPageForIndex(currentEnd) !== pageIndex) {
+        const currentPage = this._getPageForIndex(currentEnd);
+        const currentPageStart = this._pageBoundaries[currentPage - 1];
+        if (!this._pageMatches[currentPage]) {
+          this._pageMatches[currentPage] = [];
+          this._pageMatchesLength[currentPage] = [];
+        }
+        this._pageMatches[currentPage].push(0);
+        this._pageMatchesLength[currentPage].push(
+          end - this._calculateRealOffset(currentPageStart)
+        );
+      }
     }
   }
 
@@ -419,6 +435,8 @@ class PDFFindController {
         ) {
           continue;
         }
+
+        this._matchesCountTotal++;
 
         const start = this._calculateRealOffset(matchIdx);
         const pageIndex = this._getPageForIndex(matchIdx);
@@ -485,13 +503,11 @@ class PDFFindController {
         this._resumePageIdx = null;
         this._nextPageMatch();
       }
+    }
 
-      // Update the match count.
-      const pageMatchesCount = this._pageMatches[pageIndex].length;
-      if (pageMatchesCount > 0) {
-        this._matchesCountTotal += pageMatchesCount;
-        this._updateUIResultsCount();
-      }
+    // Update the match count.
+    if (this._matchesCountTotal > 0) {
+      this._updateUIResultsCount();
     }
   }
 
